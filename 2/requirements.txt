@@ -1,0 +1,9 @@
+transformers
+torch
+sentence-transformers
+langchain
+langchain-community
+faiss-cpu
+numpy
+pandas
+pydantic
