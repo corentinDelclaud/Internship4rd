@@ -4,6 +4,15 @@ import numpy as np
 import re
 from typing import List, Dict, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+import nltk
+from bert_score import score as bert_score
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from rouge_score import rouge_scorer
+
+import warnings
+from transformers import logging
+logging.set_verbosity_error()
+warnings.filterwarnings("ignore", message="Some weights of RobertaModel were not initialized*")
 
 def normalize_answer(s: str) -> str:
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -17,29 +26,97 @@ def normalize_answer(s: str) -> str:
         return text.lower()
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
-def compute_em(prediction: str, ground_truth: str) -> float:
-    return float(normalize_answer(prediction) == normalize_answer(ground_truth))
+def compute_em(
+    prediction: str,
+    ground_truth: str,
+    ignore_case: bool = True,
+    ignore_punctuation: bool = True,
+    ignore_numbers: bool = False,
+    regexes_to_ignore: Optional[List[str]] = None
+) -> float:
+    """
+    Enhanced Exact Match metric following IBM's definition.
+    - ignore_case: ignore capitalization differences
+    - ignore_punctuation: remove punctuation before comparing
+    - ignore_numbers: remove all digits before comparing
+    - regexes_to_ignore: list of regex patterns to remove from both strings before comparing
+    """
+    def process(text: str) -> str:
+        if ignore_case:
+            text = text.lower()
+        if ignore_punctuation:
+            text = re.sub(r'[^\w\s]', '', text)
+        if ignore_numbers:
+            text = re.sub(r'\d+', '', text)
+        if regexes_to_ignore:
+            for pattern in regexes_to_ignore:
+                text = re.sub(pattern, '', text)
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        return text
+    return float(process(prediction) == process(ground_truth))
 
 def compute_f1(prediction: str, ground_truth: str) -> float:
+    """
+    Compute the F1 score between prediction and ground truth at the token level.
+    This version uses collections.Counter for robust overlap counting and handles edge cases.
+    """
+    from collections import Counter
     pred_tokens = normalize_answer(prediction).split()
     gt_tokens = normalize_answer(ground_truth).split()
-    common = set(pred_tokens) & set(gt_tokens)
-    if not common:
+    pred_counter = Counter(pred_tokens)
+    gt_counter = Counter(gt_tokens)
+    common = pred_counter & gt_counter
+    num_same = sum(common.values())
+    if num_same == 0:
         return 0.0
-    precision = len(common) / len(pred_tokens) if pred_tokens else 0
-    recall = len(common) / len(gt_tokens) if gt_tokens else 0
+    precision = num_same / len(pred_tokens) if pred_tokens else 0.0
+    recall = num_same / len(gt_tokens) if gt_tokens else 0.0
     if precision + recall == 0:
         return 0.0
     return 2 * precision * recall / (precision + recall)
 
+def compute_bleu(prediction: str, ground_truth: str) -> float:
+    """
+    Compute BLEU score using nltk's sentence_bleu with smoothing.
+    This implementation uses BLEU-4 by default, as in the NLTK documentation.
+    """
+    pred_tokens = prediction.strip().split()
+    gt_tokens = ground_truth.strip().split()
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+    smoothie = SmoothingFunction().method4
+    # NLTK expects a list of reference sentences (each a list of tokens)
+    return sentence_bleu([gt_tokens], pred_tokens, smoothing_function=smoothie)
+
+def compute_rouge(prediction: str, ground_truth: str) -> dict:
+    """Compute ROUGE-1, ROUGE-2, and ROUGE-L scores."""
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+    scores = scorer.score(ground_truth, prediction)
+    return {k: v.fmeasure for k, v in scores.items()}
+
+def compute_bertscore(prediction: str, ground_truth: str, lang: str = 'en') -> float:
+    """Compute BERTScore F1 between prediction and ground truth."""
+    P, R, F1 = bert_score([prediction], [ground_truth], lang=lang, rescale_with_baseline=True, model_type='roberta-base')
+    return float(F1[0])
+
 def evaluate_automatic(predictions: List[str], ground_truths: List[str]) -> Dict[str, float]:
-    ems, f1s = [], []
+    ems, f1s, bleus, rouges, bertscores = [], [], [], [], []
     for pred, gt in zip(predictions, ground_truths):
         ems.append(compute_em(pred, gt))
         f1s.append(compute_f1(pred, gt))
+        bleus.append(compute_bleu(pred, gt))
+        rouge_dict = compute_rouge(pred, gt)
+        rouges.append(rouge_dict)
+        bertscores.append(compute_bertscore(pred, gt))
+    # Aggregate ROUGE scores
+    avg_rouge = {k: np.mean([r[k] for r in rouges]) for k in rouges[0]} if rouges else {}
     return {
         "EM": np.mean(ems),
-        "F1": np.mean(f1s)
+        "F1": np.mean(f1s),
+        "BLEU": np.mean(bleus),
+        **{f"ROUGE-{k.upper()}": v for k, v in avg_rouge.items()},
+        "BERTScore": np.mean(bertscores)
     }
 
 def extract_first_json(text):
@@ -110,7 +187,7 @@ def main():
     parser.add_argument("--references", type=str, required=True, help="Path to ground truth answers JSONL or JSON")
     parser.add_argument("--comparative", action="store_true", help="If set, run LLM-based comparative evaluation")
     parser.add_argument("--other_predictions", type=str, help="Path to second RAG predictions for comparison")
-    parser.add_argument("--model_name", type=str, default="meta-llama/Meta-Llama-3-8B-Instruct", help="HuggingFace model for LLM-based eval")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct", help="HuggingFace model for LLM-based eval")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--output", type=str, default="evaluation_results.json")
     args = parser.parse_args()
