@@ -132,42 +132,35 @@ def extract_first_json(text):
 def evaluate_llm_comparative(
     questions: List[str],
     contexts: List[str],
-    answers_a: List[str],
-    answers_b: List[str],
+    answers_list: List[List[Dict[str, str]]],  # Each inner list: [{"name":..., "answer":...}, ...]
     model_name: str,
     device: str = "cuda"
 ) -> List[Dict]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
     generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
-    prompt_template = """Compare Answer A and Answer B for the following question and context.
-Evaluation Criteria:
-1. Internalization: Does the answer integrate knowledge, not just repeat context?
-2. Fluency: Is the answer well-structured and readable?
-3. Relevance: Is the answer on-topic and deep?
-4. EM: Does the answer match the ground truth?
-5. F1: Does the answer contain relevant information from the context?
-
-Mark the Winner: Identify the superior response. If both are equally strong, mark it as a tie qnd for the Em qnd F1 just note the  and the score.
-
-Question: {question}
-Context: {context}
-Answer A: {answer_a}
-Answer B: {answer_b}
-
-Respond ONLY with a single JSON object in the following format with your respond for the winner model and the reason of your choice, it's possible to have a tie:
-{{
-  "win model": ,
-  "reason":,
-    "EM": ,
-    "F1": 
-}}
-"""
+    
+    def build_prompt(question, context, answers):
+        prompt = f"""Compare the following answers for the given question and context.\n"""
+        prompt += "Evaluation Criteria:\n"
+        prompt += "1. Internalization: Does the answer integrate knowledge, not just repeat context?\n"
+        prompt += "2. Fluency: Is the answer well-structured and readable?\n"
+        prompt += "3. Relevance: Is the answer on-topic and deep?\n"
+        prompt += "4. EM: Does the answer match the ground truth?\n"
+        prompt += "5. F1: Does the answer contain relevant information from the context?\n\n"
+        prompt += f"Question: {question}\nContext: {context}\n"
+        for idx, ans in enumerate(answers):
+            prompt += f"Answer {ans['name']}: {ans['answer']}\n"
+        prompt += ("\nRespond ONLY with a single JSON object in the following format, "
+                   "listing the winner (by name) and the reason for your choice. "
+                   "It's possible to have a tie. Also, provide EM and F1 scores for each answer as a dictionary.\n"
+                   "{\n  'win model': <name or list of names>,\n  'reason': <reason>,\n  'EM': {<name>: <score>, ...},\n  'F1': {<name>: <score>, ...}\n}\n")
+        return prompt
 
     results = []
-    for q, c, a, b in zip(questions, contexts, answers_a, answers_b):
-        prompt = prompt_template.format(question=q, context=c, answer_a=a, answer_b=b)
-        response = generator(prompt, max_new_tokens=256, do_sample=False)[0]["generated_text"]
+    for q, c, answers in zip(questions, contexts, answers_list):
+        prompt = build_prompt(q, c, answers)
+        response = generator(prompt, max_new_tokens=512, do_sample=False)[0]["generated_text"]
         try:
             result = extract_first_json(response)
         except Exception as e:
@@ -175,8 +168,7 @@ Respond ONLY with a single JSON object in the following format with your respond
         results.append({
             "question": q,
             "context": c,
-            "answer_a": a,
-            "answer_b": b,
+            "answers": answers,
             "evaluation": result
         })
     return results
@@ -210,10 +202,13 @@ def main():
             other_preds = json.load(f)
         questions = [p["question"] if isinstance(p, dict) else "" for p in preds]
         contexts = [p.get("context", "") if isinstance(p, dict) else "" for p in preds]
-        answers_a = [p["prediction"] if isinstance(p, dict) else p for p in preds]
-        answers_b = [p["prediction"] if isinstance(p, dict) else p for p in other_preds]
+        answers_list = [
+            [{"name": "Model A", "answer": p["prediction"] if isinstance(p, dict) else p},
+             {"name": "Model B", "answer": op["prediction"] if isinstance(op, dict) else op}]
+            for p, op in zip(preds, other_preds)
+        ]
         results = evaluate_llm_comparative(
-            questions, contexts, answers_a, answers_b, args.model_name, args.device
+            questions, contexts, answers_list, args.model_name, args.device
         )
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
