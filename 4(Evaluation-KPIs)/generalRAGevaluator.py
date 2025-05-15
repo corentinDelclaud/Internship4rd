@@ -4,14 +4,28 @@ import numpy as np
 import re
 from typing import List, Dict, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-import nltk
 from bert_score import score as bert_score
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from rouge_score import rouge_scorer
-
+from tqdm import tqdm
+import logging
+from datetime import datetime
+import os
 import warnings
-from transformers import logging
-logging.set_verbosity_error()
+
+import transformers
+transformers.logging.set_verbosity_error()  # <--- SUPPRESS ALL HF LOGS
+
+logfile = "evaluation_run.log"
+logging.basicConfig(
+    filename=logfile,
+    level=logging.INFO,
+    format="%(asctime)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logging.getLogger("transformers").propagate = False  # <--- DO NOT PROPAGATE TO ROOT LOGGER
+logging.getLogger("tokenizer").propagate = False  # <--- DO NOT PROPAGATE TO ROOT LOGGER
+
 warnings.filterwarnings("ignore", message="Some weights of RobertaModel were not initialized*")
 
 def normalize_answer(s: str) -> str:
@@ -34,13 +48,6 @@ def compute_em(
     ignore_numbers: bool = False,
     regexes_to_ignore: Optional[List[str]] = None
 ) -> float:
-    """
-    Enhanced Exact Match metric following IBM's definition.
-    - ignore_case: ignore capitalization differences
-    - ignore_punctuation: remove punctuation before comparing
-    - ignore_numbers: remove all digits before comparing
-    - regexes_to_ignore: list of regex patterns to remove from both strings before comparing
-    """
     def process(text: str) -> str:
         if ignore_case:
             text = text.lower()
@@ -51,16 +58,11 @@ def compute_em(
         if regexes_to_ignore:
             for pattern in regexes_to_ignore:
                 text = re.sub(pattern, '', text)
-        # Remove extra whitespace
         text = ' '.join(text.split())
         return text
     return float(process(prediction) == process(ground_truth))
 
 def compute_f1(prediction: str, ground_truth: str) -> float:
-    """
-    Compute the F1 score between prediction and ground truth at the token level.
-    This version uses collections.Counter for robust overlap counting and handles edge cases.
-    """
     from collections import Counter
     pred_tokens = normalize_answer(prediction).split()
     gt_tokens = normalize_answer(ground_truth).split()
@@ -77,50 +79,43 @@ def compute_f1(prediction: str, ground_truth: str) -> float:
     return 2 * precision * recall / (precision + recall)
 
 def compute_bleu(prediction: str, ground_truth: str) -> float:
-    """
-    Compute BLEU score using nltk's sentence_bleu with smoothing.
-    This implementation uses BLEU-4 by default, as in the NLTK documentation.
-    """
     pred_tokens = prediction.strip().split()
     gt_tokens = ground_truth.strip().split()
     if not pred_tokens or not gt_tokens:
         return 0.0
     smoothie = SmoothingFunction().method4
-    # NLTK expects a list of reference sentences (each a list of tokens)
     return sentence_bleu([gt_tokens], pred_tokens, smoothing_function=smoothie)
 
 def compute_rouge(prediction: str, ground_truth: str) -> dict:
-    """Compute ROUGE-1, ROUGE-2, and ROUGE-L scores."""
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
     scores = scorer.score(ground_truth, prediction)
     return {k: v.fmeasure for k, v in scores.items()}
 
 def compute_bertscore(prediction: str, ground_truth: str, lang: str = 'en') -> float:
-    """Compute BERTScore F1 between prediction and ground truth."""
     P, R, F1 = bert_score([prediction], [ground_truth], lang=lang, rescale_with_baseline=True, model_type='roberta-base')
     return float(F1[0])
 
 def evaluate_automatic(predictions: List[str], ground_truths: List[str]) -> Dict[str, float]:
     ems, f1s, bleus, rouges, bertscores = [], [], [], [], []
-    for pred, gt in zip(predictions, ground_truths):
+    for pred, gt in tqdm(zip(predictions, ground_truths), total=len(predictions), desc="Evaluation"):
         ems.append(compute_em(pred, gt))
         f1s.append(compute_f1(pred, gt))
         bleus.append(compute_bleu(pred, gt))
         rouge_dict = compute_rouge(pred, gt)
         rouges.append(rouge_dict)
         bertscores.append(compute_bertscore(pred, gt))
-    # Aggregate ROUGE scores
     avg_rouge = {k: np.mean([r[k] for r in rouges]) for k in rouges[0]} if rouges else {}
+    # Filter out BERTScore values that are exactly 0
+    filtered_bertscores = [b for b in bertscores if b != 0]
     return {
         "EM": np.mean(ems),
         "F1": np.mean(f1s),
         "BLEU": np.mean(bleus),
         **{f"ROUGE-{k.upper()}": v for k, v in avg_rouge.items()},
-        "BERTScore": np.mean(bertscores)
+        "BERTScore": np.mean(filtered_bertscores) if filtered_bertscores else 0.0
     }
 
 def extract_first_json(text):
-    # Find all curly-brace blocks
     matches = list(re.finditer(r'\{.*?\}', text, re.DOTALL))
     for match in matches:
         try:
@@ -182,23 +177,46 @@ def main():
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct", help="HuggingFace model for LLM-based eval")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--output", type=str, default="evaluation_results.json")
+    parser.add_argument("--max_eval", type=int, default=None, help="Maximum number of examples to evaluate")
     args = parser.parse_args()
 
+    # Logging setup
+    logfile = "evaluation_run.log"
+    logging.basicConfig(
+        filename=logfile,
+        level=logging.INFO,
+        format="%(asctime)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logging.getLogger("transformers").propagate = False
+    log_msg = (
+        f"predictions={os.path.abspath(args.predictions)} | "
+        f"references={os.path.abspath(args.references)} | "
+        f"max_eval={args.max_eval if args.max_eval is not None else 'all'}"
+    )
+    logging.info(log_msg)
+
     # Load predictions and references
-    with open(args.predictions) as f:
+    with open(args.predictions, encoding="utf-8") as f:
         preds = json.load(f)
-    with open(args.references) as f:
+    with open(args.references, encoding="utf-8") as f:
         refs = json.load(f)
 
+    # Limit number of examples if requested
+    if args.max_eval is not None:
+        preds = preds[:args.max_eval]
+        refs = refs[:args.max_eval]
+
     # Automatic metrics
-    predictions = [p["prediction"] if isinstance(p, dict) else p for p in preds]
+    predictions = [p["answer"] if isinstance(p, dict) else p for p in preds]
     ground_truths = [r["answer"] if isinstance(r, dict) else r for r in refs]
     auto_metrics = evaluate_automatic(predictions, ground_truths)
     print("Automatic Metrics:", auto_metrics)
+    logging.info(f"Automatic Metrics: {auto_metrics}")
 
     # LLM-based comparative evaluation
     if args.comparative and args.other_predictions:
-        with open(args.other_predictions) as f:
+        with open(args.other_predictions, encoding="utf-8") as f:
             other_preds = json.load(f)
         questions = [p["question"] if isinstance(p, dict) else "" for p in preds]
         contexts = [p.get("context", "") if isinstance(p, dict) else "" for p in preds]
@@ -210,7 +228,7 @@ def main():
         results = evaluate_llm_comparative(
             questions, contexts, answers_list, args.model_name, args.device
         )
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         print(f"LLM-based comparative evaluation saved to {args.output}")
 
