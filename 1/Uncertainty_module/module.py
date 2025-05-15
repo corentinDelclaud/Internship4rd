@@ -1,3 +1,4 @@
+from deepeval import evaluate
 from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, ContextualPrecisionMetric,ContextualRelevancyMetric, ContextualRecallMetric
 from deepeval.test_case import LLMTestCase
 from deepeval.models.base_model import DeepEvalBaseLLM
@@ -17,7 +18,6 @@ from lmformatenforcer.integrations.transformers import (
 )
 from pydantic import BaseModel
 import json
-
 
 class CustomModel(DeepEvalBaseLLM):
     def __init__(self):
@@ -70,3 +70,85 @@ class CustomModel(DeepEvalBaseLLM):
 
     def get_model_name(self):
         return "mistralai/Mistral-7B-v0.1"
+    
+
+custom_llm = CustomModel()
+actual_output = "We offer a 30-day full refund at no extra cost."
+expected_output = "You are eligible for a 30 day full refund at no extra cost."
+retrieval_context = ["All customers are eligible for a 30 day full refund at no extra cost."]
+test_input = "What if these shoes don't fit?"
+
+# ###Answer Relevancy Metric###
+metric = AnswerRelevancyMetric(
+     threshold=0.7,
+     model=custom_llm,
+     include_reason=True
+)
+test_case = LLMTestCase(
+     input=test_input,
+     actual_output=actual_output
+)
+evaluate(test_cases=[test_case], metrics=[metric])
+
+# #Faithfulness Metric
+metric = FaithfulnessMetric(
+     threshold=0.7,
+     model=custom_llm,
+     include_reason=True
+)
+test_case = LLMTestCase(
+     input=test_input,
+     actual_output=actual_output,
+     retrieval_context=retrieval_context
+)
+metric.measure(test_case)
+print(metric.score, metric.reason)
+evaluate(test_cases=[test_case], metrics=[metric])
+
+# #Contextual Precision Metric
+metric = ContextualPrecisionMetric(
+    threshold=0.7,
+    model=custom_llm,
+    include_reason=True
+)
+test_case = LLMTestCase(
+     input=test_input,
+     actual_output=actual_output,
+     expected_output=expected_output,
+     retrieval_context=retrieval_context
+)
+metric.measure(test_case)
+print(metric.score, metric.reason)
+
+evaluate(test_cases=[test_case], metrics=[metric])
+
+# #Contextual Recall Metric
+metric = ContextualRecallMetric(
+    threshold=0.7,
+    model=custom_llm,
+    include_reason=True
+)
+test_case = LLMTestCase(
+    input=test_input,
+    actual_output=actual_output,
+    expected_output=expected_output,
+    retrieval_context=retrieval_context
+)
+metric.measure(test_case)
+print(metric.score, metric.reason)
+evaluate(test_cases=[test_case], metrics=[metric])
+
+# #Contextual Relevancy Metric
+metric = ContextualRelevancyMetric(
+     threshold=0.6,
+     model=custom_llm,
+     include_reason=True
+)
+test_case = LLMTestCase(
+    input=test_input,
+    actual_output=actual_output,
+    retrieval_context=retrieval_context
+)
+metric.measure(test_case)
+print(metric.score, metric.reason)
+evaluate(test_cases=[test_case], metrics=[metric])
