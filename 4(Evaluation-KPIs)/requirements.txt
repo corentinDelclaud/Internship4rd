@@ -1,8 +1,7 @@
-nltk
 numpy
-re
 transformers
 bert-score
 rouge-score
 nltk
-
+numpy
+tqdm
