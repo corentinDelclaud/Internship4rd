@@ -1,31 +1,31 @@
 from deepeval import evaluate
-from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, ContextualPrecisionMetric,ContextualRelevancyMetric, ContextualRecallMetric
+from deepeval.metrics import (
+    AnswerRelevancyMetric,
+    FaithfulnessMetric,
+    ContextualPrecisionMetric,
+    ContextualRelevancyMetric,
+    ContextualRecallMetric,
+)
 from deepeval.test_case import LLMTestCase
 from deepeval.models.base_model import DeepEvalBaseLLM
 import transformers
 import torch
-from transformers import BitsAndBytesConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from deepeval.models import DeepEvalBaseLLM
-
-
-import transformers
-from deepeval.models.base_model import DeepEvalBaseLLM
+from transformers import BitsAndBytesConfig, AutoModelForCausalLM, AutoTokenizer
 from lmformatenforcer import JsonSchemaParser
 from lmformatenforcer.integrations.transformers import (
     build_transformers_prefix_allowed_tokens_fn,
 )
 from pydantic import BaseModel
 import json
-
+import csv
+import os
 
 class CustomModel(DeepEvalBaseLLM):
     def __init__(self):
         self.model_id = "mistralai/Mistral-7B-v0.1"
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            # Load the model with quantization
+        # Load the model with quantization
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_id,
             device_map="auto",
@@ -59,9 +59,13 @@ class CustomModel(DeepEvalBaseLLM):
 
             # Output and load valid JSON
             output_dict = pipeline(prompt, prefix_allowed_tokens_fn=prefix_function)
-            output = output_dict[0]["generated_text"][len(prompt) :]
-            json_result = json.loads(output)
-
+            output = output_dict[0]["generated_text"][len(prompt):]
+            print("Model output before JSON parsing:", repr(output))
+            try:
+                json_result = json.loads(output)
+            except json.JSONDecodeError as e:
+                print("JSON decode error:", e)
+                json_result = {}
             # Return valid JSON object according to the schema DeepEval supplied
             return schema(**json_result)
         return pipeline(prompt)
@@ -71,14 +75,32 @@ class CustomModel(DeepEvalBaseLLM):
 
     def get_model_name(self):
         return "mistralai/Mistral-7B-v0.1"
-    
 
+# Logging setup
+log_file = "test_results.csv"
+write_header = not os.path.exists(log_file)
 
+def log_result(metric_name, test_input, actual_output, expected_output, retrieval_context, score, reason):
+    global write_header
+    with open(log_file, "a", newline='') as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow([
+                "metric", "input", "actual_output", "expected_output",
+                "retrieval_context", "score", "reason"
+            ])
+            write_header = False
+        writer.writerow([
+            metric_name,
+            test_input,
+            actual_output,
+            expected_output if expected_output else "",
+            "; ".join(retrieval_context) if retrieval_context else "",
+            score,
+            reason
+        ])
 
 custom_llm = CustomModel()
-#print(custom_llm.generate("Write me a joke"))
-
-# After the CustomModel class and custom_llm initialization
 
 # Define test variables once
 actual_output = "We offer a 30-day full refund at no extra cost."
@@ -86,50 +108,77 @@ expected_output = "You are eligible for a 30 day full refund at no extra cost."
 retrieval_context = ["All customers are eligible for a 30 day full refund at no extra cost."]
 test_input = "What if these shoes don't fit?"
 
-# ###Answer Relevancy Metric###
+# Answer Relevancy Metric
 metric = AnswerRelevancyMetric(
-     threshold=0.7,
-     model=custom_llm,
-     include_reason=True
+    threshold=0.7,
+    model=custom_llm,
+    include_reason=True
 )
 test_case = LLMTestCase(
-     input=test_input,
-     actual_output=actual_output
+    input=test_input,
+    actual_output=actual_output
 )
 evaluate(test_cases=[test_case], metrics=[metric])
+log_result(
+    "AnswerRelevancyMetric",
+    test_input,
+    actual_output,
+    "",
+    None,
+    getattr(metric, "score", ""),
+    getattr(metric, "reason", "")
+)
 
-# #Faithfulness Metric
+# Faithfulness Metric
 metric = FaithfulnessMetric(
-     threshold=0.7,
-     model=custom_llm,
-     include_reason=True
+    threshold=0.7,
+    model=custom_llm,
+    include_reason=True
 )
 test_case = LLMTestCase(
-     input=test_input,
-     actual_output=actual_output,
-     retrieval_context=retrieval_context
+    input=test_input,
+    actual_output=actual_output,
+    retrieval_context=retrieval_context
 )
 metric.measure(test_case)
 print(metric.score, metric.reason)
 evaluate(test_cases=[test_case], metrics=[metric])
+log_result(
+    "FaithfulnessMetric",
+    test_input,
+    actual_output,
+    "",
+    retrieval_context,
+    getattr(metric, "score", ""),
+    getattr(metric, "reason", "")
+)
 
-# #Contextual Precision Metric
+# Contextual Precision Metric
 metric = ContextualPrecisionMetric(
     threshold=0.7,
     model=custom_llm,
     include_reason=True
 )
 test_case = LLMTestCase(
-     input=test_input,
-     actual_output=actual_output,
-     expected_output=expected_output,
-     retrieval_context=retrieval_context
+    input=test_input,
+    actual_output=actual_output,
+    expected_output=expected_output,
+    retrieval_context=retrieval_context
 )
 metric.measure(test_case)
 print(metric.score, metric.reason)
 evaluate(test_cases=[test_case], metrics=[metric])
+log_result(
+    "ContextualPrecisionMetric",
+    test_input,
+    actual_output,
+    expected_output,
+    retrieval_context,
+    getattr(metric, "score", ""),
+    getattr(metric, "reason", "")
+)
 
-# #Contextual Recall Metric
+# Contextual Recall Metric
 metric = ContextualRecallMetric(
     threshold=0.7,
     model=custom_llm,
@@ -144,12 +193,21 @@ test_case = LLMTestCase(
 metric.measure(test_case)
 print(metric.score, metric.reason)
 evaluate(test_cases=[test_case], metrics=[metric])
+log_result(
+    "ContextualRecallMetric",
+    test_input,
+    actual_output,
+    expected_output,
+    retrieval_context,
+    getattr(metric, "score", ""),
+    getattr(metric, "reason", "")
+)
 
-# #Contextual Relevancy Metric
+# Contextual Relevancy Metric
 metric = ContextualRelevancyMetric(
-     threshold=0.6,
-     model=custom_llm,
-     include_reason=True
+    threshold=0.6,
+    model=custom_llm,
+    include_reason=True
 )
 test_case = LLMTestCase(
     input=test_input,
@@ -159,3 +217,12 @@ test_case = LLMTestCase(
 metric.measure(test_case)
 print(metric.score, metric.reason)
 evaluate(test_cases=[test_case], metrics=[metric])
+log_result(
+    "ContextualRelevancyMetric",
+    test_input,
+    actual_output,
+    "",
+    retrieval_context,
+    getattr(metric, "score", ""),
+    getattr(metric, "reason", "")
+)
