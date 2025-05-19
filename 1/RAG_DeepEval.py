@@ -37,6 +37,24 @@ class CustomModel(DeepEvalBaseLLM):
     def generate(self, prompt: str, schema: BaseModel = None) -> BaseModel | str:
         model = self.load_model()
 
+        # Enhanced prompt template
+        enhanced_prompt = f"""
+    You are an impartial evaluator. Your task is to judge the quality of a response given a user input and, if available, additional context or an expected answer.
+
+    Instructions:
+    - Carefully read the user input, the actual response, and any provided context or expected answer.
+    - Evaluate the response according to the specified metric.
+    - Assign a score between 0 (poor) and 1 (excellent).
+    - Provide a brief explanation for your score.
+
+    Format your answer as:
+    Score: <score>
+    Reason: <your explanation>
+
+    User Input: {prompt}
+    """
+
+        # Use enhanced_prompt instead of prompt
         pipeline = transformers.pipeline(
             "text-generation",
             model=model,
@@ -51,24 +69,20 @@ class CustomModel(DeepEvalBaseLLM):
             pad_token_id=self.tokenizer.eos_token_id,
         )
         if schema is not None:
-            # Create parser required for JSON confinement using lmformatenforcer
             parser = JsonSchemaParser(schema.schema())
             prefix_function = build_transformers_prefix_allowed_tokens_fn(
                 pipeline.tokenizer, parser
             )
-
-            # Output and load valid JSON
-            output_dict = pipeline(prompt, prefix_allowed_tokens_fn=prefix_function)
-            output = output_dict[0]["generated_text"][len(prompt):]
+            output_dict = pipeline(enhanced_prompt, prefix_allowed_tokens_fn=prefix_function)
+            output = output_dict[0]["generated_text"][len(enhanced_prompt):]
             print("Model output before JSON parsing:", repr(output))
             try:
                 json_result = json.loads(output)
             except json.JSONDecodeError as e:
                 print("JSON decode error:", e)
                 json_result = {}
-            # Return valid JSON object according to the schema DeepEval supplied
             return schema(**json_result)
-        return pipeline(prompt)
+        return pipeline(enhanced_prompt)
 
     async def a_generate(self, prompt: str, schema: BaseModel = None) -> BaseModel | str:
         return self.generate(prompt, schema)
