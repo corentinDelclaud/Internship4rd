@@ -9,11 +9,12 @@
     "generate_max_length": 64,
     "query_formulation": "real_words",
     "retrieve_keep_top_k": 25,
-    "output_dir": "../result/llama2_13b_chat_2wikimultihopqa",
+    "output_dir": "../result/llama2_13b_chat_2wikimultihopqa/0",
     "retriever": "BM25",
     "es_index_name": "wiki",
     "retrieve_topk": 3,
     "hallucination_threshold": 0.9,
     "check_real_words": true,
-    "use_counter": true
+    "use_counter": true,
+    "config_path": "/home/naeem/Documents/corentin/git/Internship4rd/2/DRAGIN/config/Llama2-13b-chat/2WikiMultihopQA/DRAGIN.json"
 }

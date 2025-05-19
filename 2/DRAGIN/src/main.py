@@ -86,12 +86,21 @@ def main():
     for i in tqdm(range(len(data))):
         last_counter = copy(model.counter)
         batch = data[i]
-        pred = model.inference(batch["question"], batch["demo"], batch["case"])
+        # --- Modified: get both prediction and context ---
+        result = model.inference(batch["question"], batch["demo"], batch["case"])
+        if isinstance(result, tuple) and len(result) == 2:
+            pred, context = result
+        else:
+            pred = result
+            context = None
         pred = pred.strip()
         ret = {
             "qid": batch["qid"], 
             "prediction": pred,
+            "answer": batch.get("answer", None)
         }
+        if context is not None:
+            ret["context"] = context
         if args.use_counter:
             ret.update(model.counter.calc(last_counter))
         output_file.write(json.dumps(ret)+"\n")

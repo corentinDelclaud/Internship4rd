@@ -247,7 +247,6 @@ class SingleRAG(BasicRAG):
     def inference(self, question, demo, case):
         assert self.query_formulation == "direct"
         docs = self.retrieve(question, topk=self.retrieve_topk)
-        # 对 topk 个 passage 生成 prompt
         prompt = "".join([d["case"]+"\n" for d in demo])
         prompt += "Context:\n"
         for i, doc in enumerate(docs):
@@ -257,7 +256,7 @@ class SingleRAG(BasicRAG):
         text, _, _ = self.generator.generate(prompt, self.generate_max_length)
         if self.use_counter == True:
             self.counter.add_generate(text, self.generator.tokenizer)
-        return text
+        return text, list(docs)
 
 
 class FixLengthRAG(BasicRAG):
@@ -268,9 +267,11 @@ class FixLengthRAG(BasicRAG):
         assert self.query_formulation == "direct"
         text = ""
         retrieve_question = question
+        context_passages = []
         while True:
             old_len = len(text)
             docs = self.retrieve(retrieve_question, topk=self.retrieve_topk)
+            context_passages = list(docs)
             prompt = "".join([d["case"]+"\n" for d in demo])
             prompt += "Context:\n"
             for i, doc in enumerate(docs):
@@ -284,7 +285,6 @@ class FixLengthRAG(BasicRAG):
                 text = text.strip() + " " + new_text.strip()
                 retrieve_question = new_text.strip()
             else:
-                # fix sentence
                 new_text, _, _ = self.generator.generate(prompt, self.generate_max_length)
                 if self.use_counter == True:
                     self.counter.add_generate(new_text, self.generator.tokenizer)
@@ -295,12 +295,10 @@ class FixLengthRAG(BasicRAG):
                     break
                 text = text.strip() + " " + str(sentences[0])
                 retrieve_question = sentences[0]
-            
-            # 判断 token 的个数要少于 generate_max_length 
             tokens_count = len(self.generator.tokenizer.encode(text))
             if tokens_count > self.generate_max_length or len(text) <= old_len or "the answer is" in text:
                 break
-        return text
+        return text, context_passages
 
 
 class TokenRAG(BasicRAG):
@@ -329,19 +327,16 @@ class TokenRAG(BasicRAG):
                 "min": np.min,
             }.get(self.sentence_solver, lambda x: 0)(probs)
             if p > self.hallucination_threshold: # hallucination
-                # keep sentences before hallucination 
                 prev = "" if sid == 0 else " ".join(sentences[:sid])
-                # replace all hallucinated tokens in current sentence with [xxx]
                 curr = sentences[sid]
                 pos = 0
-                # # 这里改成了替换掉最大的那个，而不是所有的
-                # max_prob = 0
-                # for prob, tok in zip(probs, tokens[tid:tr+1]):
-                #     max_prob = max(prob, max_prob)
                 for prob, tok in zip(probs, tokens[tid:tr+1]):
-                    apr = curr[pos:].find(tok) + pos
+                    apr = curr[pos:].find(tok)
+                    if apr == -1:
+                        pos += len(tok)
+                        continue
+                    apr += pos
                     if prob > self.hallucination_threshold:
-                    # if prob == max_prob:
                         curr = curr[:apr] + "[xxx]" + curr[apr+len(tok):]
                         pos = apr + len("[xxx]")
                     else:
@@ -353,8 +348,8 @@ class TokenRAG(BasicRAG):
         return text, None, False
     
     def inference(self, question, demo, case):
-        # assert self.query_formulation == "direct"
         text = ""
+        context_passages = []
         while True:
             old_len = len(text)
             prompt = "".join([d["case"]+"\n" for d in demo])
@@ -379,6 +374,7 @@ class TokenRAG(BasicRAG):
                     raise NotImplemented
 
                 docs = self.retrieve(retrieve_question, topk=self.retrieve_topk)
+                context_passages = list(docs)
                 prompt = "".join([d["case"]+"\n" for d in demo])
                 prompt += "Context:\n"
                 for i, doc in enumerate(docs):
@@ -390,12 +386,10 @@ class TokenRAG(BasicRAG):
                     self.counter.add_generate(new_text, self.generator.tokenizer)
                     self.counter.hallucinated += 1
                 text = text.strip() + " " + ptext.strip() + " " + new_text.strip()
-            
-            # 判断 token 的个数要少于 generate_max_length 
             tokens_count = len(self.generator.tokenizer.encode(text))
             if tokens_count > self.generate_max_length or len(text) <= old_len or "the answer is" in text:
                 break
-        return text
+        return text, context_passages
     
 
 class EntityRAG(TokenRAG):
@@ -475,7 +469,8 @@ class EntityRAG(TokenRAG):
         return text, None, False
 
     def inference(self, question, demo, case):
-        return super().inference(question, demo, case)
+        text, context_passages = super().inference(question, demo, case)
+        return text, context_passages
 
 
 class AttnWeightRAG(BasicRAG):
@@ -530,6 +525,10 @@ class AttnWeightRAG(BasicRAG):
         input_ids = self.generator.tokenizer.encode(all_text, return_tensors="pt")
         input_length = input_ids.shape[1]
         tokens_tmp = self.generator.tokenizer.convert_ids_to_tokens(input_ids[0])
+
+        # Ensure input_ids is on the same device as the model
+        device = next(self.generator.model.parameters()).device
+        input_ids = input_ids.to(device)
 
         atten_tmp = self.generator.model(input_ids, output_attentions=True).attentions[-1][0]
 
@@ -600,41 +599,32 @@ class AttnWeightRAG(BasicRAG):
             top_k = int(len(real_pairs) * self.retrieve_keep_ratio)
         
         real_pairs = sorted(real_pairs, key = lambda x:x[0], reverse=True)
-        real_pairs = real_pairs[:top_k]
-        real_pairs = sorted(real_pairs, key = lambda x:x[2])
+        real_pairs = sorted(real_pairs[:top_k], key = lambda x:x[2])
         return " ".join([x[1] for x in real_pairs])
         
     def inference(self, question, demo, case):
-        # assert self.query_formulation == "direct"
-        # print(question)
-        # print("#" * 20)
         text = ""
+        context_passages = []
         while True:
             old_len = len(text)
             prompt = "".join([d["case"]+"\n" for d in demo])
             tmp_li = [case, text]
             prompt += " ".join(s for s in tmp_li if len(s) > 0)
-            # print('####', prompt)
-            # prompt += case + " " + text
             new_text, tokens, attns, logprobs, entropies = self.generator.generate_attn(
                 prompt, 
                 self.generate_max_length, 
-                # self.attention_solver, 
                 use_entropy = self.method == "dragin", 
                 use_logprob = self.method == "attn_prob"
             )
             weight = entropies if self.method == "dragin" else [-v for v in logprobs]
-
             if self.use_counter == True:
                 self.counter.add_generate(new_text, self.generator.tokenizer)
             hallucination, ptext, curr_tokens, curr_hit =  self.modifier(new_text, tokens, attns, weight)
-            
             if not hallucination:
                 text = text.strip() + " " + new_text.strip()
             else:
                 forward_all = [question, text, ptext]
                 forward_all = " ".join(s for s in forward_all if len(s) > 0)
-
                 def fetch_last_n_tokens(text, num, tokenizer = self.generator.tokenizer):
                     tokens = tokenizer.tokenize(text)
                     if num >= len(tokens):
@@ -642,26 +632,20 @@ class AttnWeightRAG(BasicRAG):
                     last_n_tokens = tokens[-num:]
                     last_n_sentence = ' '.join(last_n_tokens)
                     return last_n_sentence
-
                 if self.query_formulation == "current":
                     retrieve_question = " ".join(curr_tokens)
-
                 elif self.query_formulation == "current_wo_wrong":
                     retrieve_question = " ".join(
                         list(curr_tokens[i] if curr_hit[i] == 0 else "" for i in range(len(curr_tokens)))
                     )
-
                 elif self.query_formulation == "forward_all":
                     retrieve_question = forward_all
-                
                 elif self.query_formulation == "last_sentence":
                     retrieve_question = self.get_last_sentence(forward_all)
-                
                 elif self.query_formulation == "last_n_tokens":
                     assert "retrieve_keep_top_k" in self.__dict__
                     retrieve_question = fetch_last_n_tokens(
                         forward_all, self.retrieve_keep_top_k)
-                
                 elif self.query_formulation == "real_words": 
                     retrieve_question = self.keep_real_words(
                         prev_text = question + " " + text + " " + ptext, 
@@ -670,8 +654,8 @@ class AttnWeightRAG(BasicRAG):
                     ) 
                 else:
                     raise NotImplemented
-
                 docs = self.retrieve(retrieve_question, topk=self.retrieve_topk)
+                context_passages = list(docs)
                 prompt = "".join([d["case"]+"\n" for d in demo])
                 prompt += "Context:\n"
                 for i, doc in enumerate(docs):
@@ -679,8 +663,6 @@ class AttnWeightRAG(BasicRAG):
                 prompt += "Answer in the same format as before.\n"
                 tmp_li = [case, text, ptext.strip()]
                 prompt += " ".join(s for s in tmp_li if len(s) > 0)
-                # print('#####', prompt)
-                # prompt += case + " " + text + " " + ptext.strip()
                 new_text, _, _ = self.generator.generate(prompt, self.generate_max_length)
                 if self.use_counter == True:
                     self.counter.add_generate(new_text, self.generator.tokenizer)
@@ -688,19 +670,7 @@ class AttnWeightRAG(BasicRAG):
                 new_text = self.get_top_sentence(new_text)
                 tmp_li = [text.strip(), ptext.strip(), new_text.strip()]
                 text = " ".join(s for s in tmp_li if len(s) > 0)
-                # text = text.strip() + " " + ptext.strip() + " " + new_text.strip()
-
-                # print("### retrieve_question ###")
-                # print(retrieve_question)
-                # context = "### Context: ###\n"
-                # for i, doc in enumerate(docs):
-                #     context += f"[{i+1}] {doc}\n" 
-                # print(context)
-                # print(text)
-            
-            # 判断 token 的个数要少于 generate_max_length 
             tokens_count = len(self.generator.tokenizer.encode(text))
             if tokens_count > self.generate_max_length or len(text) <= old_len or "the answer is" in text:
                 break
-        # print("#" * 20)
-        return text
+        return text, context_passages
