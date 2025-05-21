@@ -86,7 +86,7 @@ class LLM(torch.nn.Module):
         enable_autocast = self.device != torch.device("cpu")
 
         if enable_autocast:
-            return torch.cuda.amp.autocast(dtype=dtype)
+            return torch.amp.autocast('cuda',dtype=dtype)
         else:
             return contextlib.nullcontext()
 
@@ -99,8 +99,10 @@ class LLM(torch.nn.Module):
         # encode special tokens
         eos_tokens = self.tokenizer(EOS, add_special_tokens=False)
         eos_user_tokens = self.tokenizer(EOS_USER, add_special_tokens=False)
-        bos_embeds = self.word_embedding(self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0])
-        pad_embeds = self.word_embedding(torch.tensor(self.tokenizer.pad_token_id)).unsqueeze(0)
+        device = self.word_embedding.weight.device
+        bos_input_ids = self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0].to(device)
+        bos_embeds = self.word_embedding(bos_input_ids)
+        pad_embeds = self.word_embedding(torch.tensor(self.tokenizer.pad_token_id, device=device)).unsqueeze(0)
 
         batch_size = len(samples['id'])
         batch_inputs_embeds = []
@@ -148,8 +150,10 @@ class LLM(torch.nn.Module):
 
         # encode special tokens
         eos_user_tokens = self.tokenizer(EOS_USER, add_special_tokens=False)
-        bos_embeds = self.word_embedding(self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0])
-        pad_embeds = self.word_embedding(torch.tensor(self.tokenizer.pad_token_id)).unsqueeze(0)
+        device = self.word_embedding.weight.device
+        bos_input_ids = self.tokenizer(BOS, add_special_tokens=False, return_tensors='pt').input_ids[0].to(device)
+        bos_embeds = self.word_embedding(bos_input_ids)
+        pad_embeds = self.word_embedding(torch.tensor(self.tokenizer.pad_token_id, device=device)).unsqueeze(0)
 
         batch_size = len(samples['id'])
         batch_inputs_embeds = []

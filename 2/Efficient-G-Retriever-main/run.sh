@@ -1,4 +1,4 @@
-for seed in 0 1 2 3 
+for seed in 0 
 do
 # 1) inference only
 # a) Question-Only

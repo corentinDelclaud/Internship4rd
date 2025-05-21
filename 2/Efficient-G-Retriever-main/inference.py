@@ -38,8 +38,6 @@ def main(args):
     # Step 3: Build Model
     args.llm_model_path = llama_model_path[args.llm_model_name]
     model = load_model[args.model_name](graph=dataset.graph, graph_type=dataset.graph_type, args=args)
-    access_token = "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"
-    model = AutoModel.from_pretrained("meta-llama/Llama-2-7b-hf", token=access_token)
 
     # Step 4. Evaluating
     os.makedirs(f'{args.output_dir}/{args.dataset}', exist_ok=True)
