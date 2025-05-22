@@ -4,7 +4,7 @@ import os
 # Function to read the content of each document from the example_text directory
 def read_documents_from_files():
     documents = []
-    directory = "example_text"
+    directory = r"C:\Users\coren\Desktop\cours\LLM\Internship 4rd\KPIs\2\RAGCOOKER\example_text"
     for filename in os.listdir(directory):
         if filename.endswith(".txt"):
             file_path = os.path.join(directory, filename)

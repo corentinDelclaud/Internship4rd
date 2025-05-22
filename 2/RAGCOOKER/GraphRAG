@@ -3,6 +3,7 @@ from cdlib import algorithms
 from constants import DOCUMENTS
 import ollama
 import re
+import csv
 
 
 
@@ -182,7 +183,11 @@ def graph_rag_pipeline(documents, query, chunk_size=600, overlap_size=100):
     print("graph:", graph)
     communities = detect_communities(graph)
 
-    print("communities:", communities[0])
+    if not communities:
+        print("No communities found. Returning empty answer.")
+        return "No answer could be generated (no communities found)."
+    else:
+        print("communities:", communities[0])
     # Step 5: Summarize communities
     community_summaries = summarize_communities(communities, graph)
 
