@@ -1,5 +1,0 @@
-src,edge_attr,dst
-0,is a,1
-2,causes,3
-4,receives action,2
-1,has subevent,4
