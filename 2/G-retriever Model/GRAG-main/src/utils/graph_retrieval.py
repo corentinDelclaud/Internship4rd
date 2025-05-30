@@ -222,20 +222,21 @@ def find_topk_subgraph(graph, q_emb, top_k_indices, edges_mapping, textual_nodes
 
 def retrive_on_graphs(graph, q_emb, textual_nodes, textual_edges, topk=10, k = 2, topk_entity = 5, augment = "none", sims = None):
 
+    # Cas où pas de données textuelles
     if len(textual_nodes) == 0 or len(textual_edges) == 0:
         desc = textual_nodes.to_csv(index=False) + '\n' + textual_edges.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
-        graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr, num_nodes=graph.num_nodes)
-        if sims is not None:
-            return graph, desc
-        else:
-            return torch.zeros(0,  dtype=q_emb.dtype), (graph, desc)
+        return torch.zeros(0, dtype=q_emb.dtype), (graph, desc)
 
+    # Mapping des arêtes
     edges_mapping = [(src, dst) for _, (src, dst) in enumerate(graph.edge_index.T.numpy())]
+
+    # Si similarités pré-calculées
     if sims is not None: 
         top_k_indices = torch.topk(sims, topk, largest=True).indices.tolist()
         return find_topk_subgraph(graph, q_emb, top_k_indices, edges_mapping, textual_nodes, textual_edges, k, topk_entity)
-    
+
     if augment in {"path", "triplet"}:
+        # Chargement du modèle LLM pour génération textuelle
         kwargs = {
             "max_memory": {0: '20GiB', 1: '20GiB', 2: '20GiB', 3: '20GiB'},
             "device_map": "auto",
@@ -255,13 +256,13 @@ def retrive_on_graphs(graph, q_emb, textual_nodes, textual_edges, topk=10, k = 2
         for _, param in path_model.named_parameters():
                     param.requires_grad = False      
     elif augment == "trunk" or augment == "none": 
-        pass
+        pass  # Pas de modèle supplémentaire nécessaire
     else:
         raise ValueError("Select 'augment' mode from: 'trunk', 'path', 'triplet' or 'none'.")
 
     flatten_graphs, subg_embs = [], []
     for node_id in range(graph.num_nodes):
-        # Get the subgraph
+        # Extraction K-hop pour chaque nœud
         try:
             subgraph_nodes, subgraph_edge_indices, _, _ = k_hop_subgraph(
                 node_idx=node_id, 
@@ -269,7 +270,8 @@ def retrive_on_graphs(graph, q_emb, textual_nodes, textual_edges, topk=10, k = 2
                 edge_index=graph.edge_index, 
                 relabel_nodes=False
             )
-
+            
+            # Création du sous-graphe
             if graph.edge_attr.dim() == 2:
                 if subgraph_edge_indices.size(1) == 0: subgraph_edge_attr = None
                 else: 
@@ -313,10 +315,16 @@ def retrive_on_graphs(graph, q_emb, textual_nodes, textual_edges, topk=10, k = 2
         else:
              raise ValueError("Select 'augment' mode from: 'trunk', 'path', 'triplet' or 'none'.")
     
-    if augment != "none":  subg_embs = text2embedding(sentence_model, sentence_tokenizer, device, flatten_graphs)
-    else: subg_embs = torch.stack(subg_embs)
+    # Conversion en embeddings selon le mode d'augmentation
+    if augment != "none":  
+        subg_embs = text2embedding(sentence_model, sentence_tokenizer, device, flatten_graphs)
+    else: 
+        subg_embs = torch.stack(subg_embs)
+
+    # Calcul des similarités cosinus
     sims = torch.nn.CosineSimilarity(dim=-1)(q_emb, subg_embs)
 
+    # Sélection des top-k nœuds
     if graph.num_nodes > topk:
         top_k_indices = torch.topk(sims, topk, largest=True).indices.tolist()
     else:
