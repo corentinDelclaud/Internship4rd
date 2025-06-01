@@ -2,20 +2,20 @@ import torch
 import numpy as np
 from pcst_fast import pcst_fast
 from torch_geometric.data.data import Data
+from torch_geometric.utils import k_hop_subgraph
 from torch.nn.functional import cosine_similarity
 
 def retrieval_via_attention(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_e=3, threshold_node=None, threshold_edge=None):
-    
     # If no textual descriptions, return original graph and its description.
     if len(textual_nodes) == 0 or len(textual_edges) == 0:
         desc = textual_nodes.to_csv(index=False) + '\n' + \
                textual_edges.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
         graph = Data(x=graph.x, edge_index=graph.edge_index, edge_attr=graph.edge_attr, num_nodes=graph.num_nodes)
         return graph, desc
-    
+
     # Compute node attention scores using cosine similarity between q_emb and node features.
     node_scores = cosine_similarity(q_emb, graph.x)  # shape: (num_nodes,)
-    
+
     # Select nodes based on threshold or topk selection.
     if threshold_node is None:
         topk = min(topk, graph.num_nodes)
@@ -25,10 +25,10 @@ def retrieval_via_attention(graph, q_emb, textual_nodes, textual_edges, topk=3, 
         if topk_n_indices.numel() == 0:
             topk = min(topk, graph.num_nodes)
             _, topk_n_indices = torch.topk(node_scores, topk, largest=True)
-    
+
     # Compute edge attention scores similarly.
     edge_scores = cosine_similarity(q_emb, graph.edge_attr)  # shape: (num_edges,)
-    
+
     if threshold_edge is None:
         unique_edge_scores = edge_scores.unique()
         topk_e = min(topk_e, unique_edge_scores.size(0))
@@ -44,17 +44,17 @@ def retrieval_via_attention(graph, q_emb, textual_nodes, textual_edges, topk=3, 
             topk_e_values, _ = torch.topk(unique_edge_scores, topk_e, largest=True)
             selected_edge_mask = edge_scores >= topk_e_values[-1]
             topk_e_indices = selected_edge_mask.nonzero(as_tuple=False).view(-1)
-    
+
     # Aggregate nodes that are incident to the selected high-attention edges.
     row, col = graph.edge_index
     selected_edge_nodes = torch.cat([row[topk_e_indices], col[topk_e_indices]]).unique()
-    
+
     # Take the union of the top nodes and the nodes incident to high-attention edges.
     selected_nodes = torch.unique(torch.cat([topk_n_indices, selected_edge_nodes]))
-    
+
     # Build a set for quick lookup.
     selected_nodes_set = set(selected_nodes.tolist())
-    
+
     # Filter edges: keep those where both endpoints are in the selected set.
     selected_edge_indices = []
     for i in range(graph.edge_index.shape[1]):
@@ -63,24 +63,24 @@ def retrieval_via_attention(graph, q_emb, textual_nodes, textual_edges, topk=3, 
         if u in selected_nodes_set and v in selected_nodes_set:
             selected_edge_indices.append(i)
     selected_edge_indices = torch.tensor(selected_edge_indices, dtype=torch.long, device=graph.x.device)
-    
+
     # Create textual description using selected nodes and edges.
     n = textual_nodes.iloc[selected_nodes.cpu().numpy()]
     e = textual_edges.iloc[selected_edge_indices.cpu().numpy()]
     desc = n.to_csv(index=False) + '\n' + e.to_csv(index=False, columns=['src', 'edge_attr', 'dst'])
-    
+
     # Remap node indices to create a contiguous subgraph.
     mapping = {int(n): i for i, n in enumerate(selected_nodes.cpu().numpy())}
     edge_index_sub = graph.edge_index[:, selected_edge_indices]
     src = [mapping[int(i)] for i in edge_index_sub[0].tolist()]
     dst = [mapping[int(i)] for i in edge_index_sub[1].tolist()]
     edge_index_sub = torch.LongTensor([src, dst]).to(graph.x.device)
-    
+
     # Construct the new subgraph Data object.
     x_sub = graph.x[selected_nodes]
     edge_attr_sub = graph.edge_attr[selected_edge_indices]
     data = Data(x=x_sub, edge_index=edge_index_sub, edge_attr=edge_attr_sub, num_nodes=selected_nodes.size(0))
-    
+
     return data, desc
 
 def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_e=3, cost_e=0.5):
@@ -176,3 +176,42 @@ def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_nodes=len(selected_nodes))
 
     return data, desc
+
+def hybrid_khop_pcst_subgraph(
+    graph, q_emb, textual_nodes, textual_edges,
+    target_nodes, k=2, topk=10, topk_e=5, cost_e=0.5
+):
+    """
+    Extraction hybride : K-hop autour des nœuds cibles puis PCST sur ce sous-graphe.
+    - graph : Data PyG complet
+    - q_emb : embedding de la requête
+    - textual_nodes, textual_edges : DataFrames textuels
+    - target_nodes : liste des nœuds cibles (ex : [user, item])
+    - k : profondeur K-hop
+    - topk, topk_e, cost_e : paramètres PCST
+    """
+    # 1. Extraction du sous-graphe K-hop autour des nœuds cibles
+    nodes, edge_index, _, edge_mask = k_hop_subgraph(
+        node_idx=target_nodes,
+        num_hops=k,
+        edge_index=graph.edge_index,
+        relabel_nodes=False,
+        num_nodes=graph.num_nodes
+    )
+    subgraph = Data(
+        x=graph.x[nodes],
+        edge_index=edge_index,
+        edge_attr=graph.edge_attr[edge_mask] if graph.edge_attr is not None else None,
+        num_nodes=len(nodes)
+    )
+    # Adapter les DataFrames textuels au sous-graphe
+    textual_nodes_sub = textual_nodes.iloc[nodes.cpu().numpy()]
+    textual_edges_sub = textual_edges.iloc[edge_mask.cpu().numpy()]
+    
+    # 2. Application de PCST sur le sous-graphe K-hop
+    data_pcst, desc_pcst = retrieval_via_pcst(
+        subgraph, q_emb, textual_nodes_sub, textual_edges_sub,
+        topk=topk, topk_e=topk_e, cost_e=cost_e
+    )
+    # Remapping des indices pour correspondre aux indices globaux si besoin
+    return data_pcst, desc_pcst
