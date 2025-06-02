@@ -177,18 +177,15 @@ def retrieval_via_pcst(graph, q_emb, textual_nodes, textual_edges, topk=3, topk_
 
     return data, desc
 
-def hybrid_khop_pcst_subgraph(
-    graph, q_emb, textual_nodes, textual_edges,
-    target_nodes, k=2, topk=10, topk_e=5, cost_e=0.5
-):
+def hybrid_khop_pcst_subgraph(graph, q_emb, textual_nodes, textual_edges, target_nodes, k=2, topk=10, topk_e=5, cost_e=0.5):
     """
-    Extraction hybride : K-hop autour des nœuds cibles puis PCST sur ce sous-graphe.
-    - graph : Data PyG complet
-    - q_emb : embedding de la requête
-    - textual_nodes, textual_edges : DataFrames textuels
-    - target_nodes : liste des nœuds cibles (ex : [user, item])
-    - k : profondeur K-hop
-    - topk, topk_e, cost_e : paramètres PCST
+    Extraction hybride : K-hop autour des nœuds cibles puis PCST sur ce sous-graphe.
+    - graph : Data PyG complet
+    - q_emb : embedding de la requête
+    - textual_nodes, textual_edges : DataFrames textuels
+    - target_nodes : liste des nœuds cibles (ex : [user, item])
+    - k : profondeur K-hop
+    - topk, topk_e, cost_e : paramètres PCST
     """
     # 1. Extraction du sous-graphe K-hop autour des nœuds cibles
     nodes, edge_index, _, edge_mask = k_hop_subgraph(
@@ -215,3 +212,12 @@ def hybrid_khop_pcst_subgraph(
     )
     # Remapping des indices pour correspondre aux indices globaux si besoin
     return data_pcst, desc_pcst
+
+def select_target_nodes_by_similarity(graph, q_emb, topk=1):
+    """
+    Sélectionne les indices des top-k nœuds les plus similaires à q_emb.
+    """
+    sims = torch.nn.functional.cosine_similarity(q_emb, graph.x)
+    topk = min(topk, graph.x.shape[0])
+    topk_indices = torch.topk(sims, topk, largest=True).indices.tolist()
+    return topk_indices

@@ -4,7 +4,7 @@ import pandas as pd
 from torch.utils.data import Dataset
 import datasets
 from tqdm import tqdm
-from src.dataset.utils.retrieval import retrieval_via_pcst, retrieval_via_attention
+from src.dataset.utils.retrieval import retrieval_via_pcst, retrieval_via_attention, hybrid_khop_pcst_subgraph, select_target_nodes_by_similarity
 
 model_name = 'sbert'
 path = 'dataset/webqsp'
@@ -76,8 +76,9 @@ def preprocess():
             continue
         graph = torch.load(f'{path_graphs}/{index}.pt')
         q_emb = q_embs[index]
-        # subg, desc = retrieval_via_pcst(graph, q_emb, nodes, edges, topk=3, topk_e=5, cost_e=0.5)
-        subg, desc = retrieval_via_attention(graph, q_emb, nodes, edges, topk=3, topk_e=5)    # Retrieval using attention
+        # Sélection dynamique des target_nodes par similarité
+        target_nodes = select_target_nodes_by_similarity(graph, q_emb, topk=1)
+        subg, desc = hybrid_khop_pcst_subgraph(graph, q_emb, nodes, edges, target_nodes=target_nodes, k=2, topk=3, topk_e=5, cost_e=0.5)
         torch.save(subg, f'{cached_graph}/{index}.pt')
         open(f'{cached_desc}/{index}.txt', 'w').write(desc)
 
