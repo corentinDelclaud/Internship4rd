@@ -39,8 +39,8 @@ Efficient-G-Retriever/
 ## Environment Setup
 
 ```bash
-conda create --name g_retriever python=3.9 -y
-conda activate g_retriever
+conda create --name g_retriever_HYBRID python=3.9 -y
+conda activate g_retriever_HYBRID
 
 # https://pytorch.org/get-started/locally/
 conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia

@@ -80,7 +80,7 @@ class PromptTuningLLM(torch.nn.Module):
         self.word_embedding = self.model.model.get_input_embeddings()
 
         # prompt tuning
-        init_token_ids = self.tokenizer(init_prompt).input_ids
+        init_token_ids = self.tokenizer(text=init_prompt).input_ids
         num_text_tokens = len(init_token_ids)
         if num_text_tokens < num_virtual_tokens:
             num_reps = math.ceil(num_virtual_tokens / num_text_tokens)
